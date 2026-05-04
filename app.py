@@ -20,27 +20,28 @@ CLASS_LIST = list(CLASS_CAPACITY.keys())
 
 st.set_page_config(page_title="교회 원데이클래스 신청", page_icon="⛪")
 
-# --- ✨ 신청 완료 메시지 표시 로직 (rerun 후에도 유지) ---
+# --- 신청 완료 메시지 표시 로직 ---
 if "submitted" not in st.session_state:
     st.session_state.submitted = False
 
 if st.session_state.submitted:
     st.success(f"🎉 신청이 정상적으로 완료되었습니다! [{st.session_state.last_class}]")
     st.balloons()
-    # 메시지를 확인했으니 상태 초기화
     st.session_state.submitted = False
 
 # --- 구글 시트 연결 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# 핵심 수정 부분: ttl=0 을 추가하여 실시간으로 데이터를 가져옵니다.
 def load_data():
-    return conn.read(spreadsheet=SHEET_URL, usecols=[0,1,2,3,4])
+    return conn.read(spreadsheet=SHEET_URL, usecols=[0,1,2,3,4], ttl=0)
 
 # --- UI 구성 ---
 st.title("⛪ 원데이클래스 선착순 신청")
 
 try:
     df_current = load_data()
+    # 데이터가 아예 없는 경우를 대비한 처리
     df_current = df_current.dropna(how="all")
     if '클래스' not in df_current.columns:
         df_current['클래스'] = ""
@@ -70,7 +71,7 @@ st.divider()
 if not display_options:
     st.error("🚨 모든 클래스가 마감되었습니다.")
 else:
-    with st.form("registration_form", clear_on_submit=True): # clear_on_submit 추가로 입력폼 초기화
+    with st.form("registration_form", clear_on_submit=True):
         name = st.text_input("이름")
         cell_name = st.text_input("셀 이름")
         phone = st.text_input("연락처")
@@ -79,6 +80,7 @@ else:
 
         if submit_button:
             try:
+                # 신청 시점에도 최신 데이터를 다시 불러와 정원 확인
                 df_latest = load_data().dropna(how="all")
                 latest_counts = df_latest['클래스'].value_counts().to_dict()
             except:
@@ -98,7 +100,6 @@ else:
                 updated_df = pd.concat([df_current, new_row], ignore_index=True)
                 conn.update(spreadsheet=SHEET_URL, data=updated_df)
                 
-                # ✨ 세션 상태에 저장 후 새로고침
                 st.session_state.submitted = True
                 st.session_state.last_class = class_choice
                 st.rerun()
@@ -112,6 +113,7 @@ with st.expander("🛠️ 관리자 메뉴 (비밀번호 필요)"):
     if input_pw == ADMIN_PASSWORD:
         st.success("인증되었습니다.")
         st.subheader("📝 전체 신청 명단")
+        # 관리자 메뉴에서도 최신 데이터를 즉시 불러옵니다.
         admin_df = load_data().dropna(how="all")
         st.dataframe(admin_df, use_container_width=True)
         
