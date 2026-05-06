@@ -62,21 +62,21 @@ c1, c2 = st.columns(2)
 with c1:
     user_name = st.text_input("이름을 입력하세요", placeholder="홍길동")
 with c2:
-    user_phone = st.text_input("연락처를 입력하세요", placeholder="010-1234-5678")
+    user_cell = st.text_input("셀 이름을 입력하세요", placeholder="사랑셀")
 
-if user_name and user_phone:
-    # 1. 중복 신청 여부 확인 (이름과 연락처 모두 일치해야 함)
-    existing_user = df_current[(df_current['이름'] == user_name) & (df_current['연락처'] == user_phone)]
+if user_name and user_cell:
+    # 1. 중복 신청 여부 확인 (이름과 셀 이름 모두 일치해야 함)
+    existing_user = df_current[(df_current['이름'] == user_name) & (df_current['셀이름'] == user_cell)]
     
     if not existing_user.empty:
         # 이미 신청한 경우
         registered_class = existing_user.iloc[0]['클래스']
-        st.info(f"📍 **{user_name}** 님( {user_phone} )은 이미 [**{registered_class}**] 클래스에 신청하셨습니다.")
+        st.info(f"📍 **{user_name}** 님( **{user_cell}** )은 이미 [**{registered_class}**] 클래스에 신청하셨습니다.")
         
         st.warning("신청 내역을 변경하시려면 먼저 취소 버튼을 눌러주세요.")
         if st.button(f"🗑️ '{registered_class}' 신청 취소하기"):
-            # 이름과 연락처가 모두 일치하는 행만 삭제
-            updated_df = df_current[~((df_current['이름'] == user_name) & (df_current['연락처'] == user_phone))]
+            # 이름과 셀 이름이 모두 일치하는 행만 삭제
+            updated_df = df_current[~((df_current['이름'] == user_name) & (df_current['셀이름'] == user_cell))]
             conn.update(spreadsheet=SHEET_URL, data=updated_df)
             st.success("신청이 정상적으로 취소되었습니다. 다시 신청해 주세요!")
             st.rerun()
@@ -87,8 +87,8 @@ if user_name and user_phone:
             st.error("🚨 모든 클래스가 마감되었습니다.")
         else:
             with st.form("registration_form", clear_on_submit=True):
-                st.write(f"👉 **{user_name}** 님, 신청 정보를 입력해 주세요.")
-                cell_name = st.text_input("셀 이름")
+                st.write(f"👉 **{user_name}** 님( **{user_cell}** ), 나머지 정보를 입력해 주세요.")
+                user_phone = st.text_input("연락처를 입력하세요", placeholder="010-1234-5678")
                 class_choice = st.selectbox("원하시는 클래스를 선택하세요", display_options)
                 submit_button = st.form_submit_button("신청 완료")
 
@@ -100,15 +100,15 @@ if user_name and user_phone:
                     except:
                         latest_counts = {}
                     
-                    if not cell_name:
-                        st.warning("셀 이름을 입력해주세요.")
+                    if not user_phone:
+                        st.warning("연락처를 입력해주세요.")
                     elif latest_counts.get(class_choice, 0) >= CLASS_CAPACITY[class_choice]:
                         st.error(f"앗! 그새 '{class_choice}' 클래스가 마감되었습니다.")
                     else:
                         new_row = pd.DataFrame([{
                             "신청시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "이름": user_name, 
-                            "셀이름": cell_name, 
+                            "셀이름": user_cell, 
                             "연락처": user_phone, 
                             "클래스": class_choice
                         }])
@@ -119,7 +119,7 @@ if user_name and user_phone:
                         st.balloons()
                         st.rerun()
 else:
-    st.write("위의 **이름 ** 과 **연락처 ** 를 모두 입력하면 신청 확인 및 신규 신청이 가능합니다.")
+    st.write("위의 **이름 ** 과 **셀 이름 ** 을 모두 입력하면 신청 확인 및 신규 신청이 가능합니다.")
 
 # --- 관리자 메뉴 ---
 st.write("\n" * 5)
