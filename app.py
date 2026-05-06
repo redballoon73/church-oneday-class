@@ -20,34 +20,22 @@ CLASS_LIST = list(CLASS_CAPACITY.keys())
 
 st.set_page_config(page_title="교회 원데이클래스 신청", page_icon="⛪")
 
-# --- 신청 완료 메시지 표시 로직 ---
-if "submitted" not in st.session_state:
-    st.session_state.submitted = False
-
-if st.session_state.submitted:
-    st.success(f"🎉 신청이 정상적으로 완료되었습니다! [{st.session_state.last_class}]")
-    st.balloons()
-    st.session_state.submitted = False
-
 # --- 구글 시트 연결 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 핵심 수정 부분: ttl=0 을 추가하여 실시간으로 데이터를 가져옵니다.
 def load_data():
     return conn.read(spreadsheet=SHEET_URL, usecols=[0,1,2,3,4], ttl=0)
 
 # --- UI 구성 ---
 st.title("⛪ 원데이클래스 선착순 신청")
 
+# 데이터 로드
 try:
-    df_current = load_data()
-    # 데이터가 아예 없는 경우를 대비한 처리
-    df_current = df_current.dropna(how="all")
-    if '클래스' not in df_current.columns:
-        df_current['클래스'] = ""
+    df_current = load_data().dropna(how="all")
 except:
     df_current = pd.DataFrame(columns=["신청시간", "이름", "셀이름", "연락처", "클래스"])
 
+# 클래스별 잔여 현황 계산
 class_counts = df_current['클래스'].value_counts().to_dict()
 
 st.subheader("📊 클래스별 잔여 현황")
@@ -68,42 +56,72 @@ for i, class_name in enumerate(CLASS_LIST):
 
 st.divider()
 
-if not display_options:
-    st.error("🚨 모든 클래스가 마감되었습니다.")
-else:
-    with st.form("registration_form", clear_on_submit=True):
-        name = st.text_input("이름")
-        cell_name = st.text_input("셀 이름")
-        phone = st.text_input("연락처")
-        class_choice = st.selectbox("원하시는 클래스를 선택하세요", display_options)
-        submit_button = st.form_submit_button("신청하기")
+# --- 신청 및 확인 로직 ---
+st.subheader("📝 신청하기 및 내역 확인")
+c1, c2 = st.columns(2)
+with c1:
+    user_name = st.text_input("이름을 입력하세요", placeholder="홍길동")
+with c2:
+    user_phone = st.text_input("연락처를 입력하세요", placeholder="010-1234-5678")
 
-        if submit_button:
-            try:
-                # 신청 시점에도 최신 데이터를 다시 불러와 정원 확인
-                df_latest = load_data().dropna(how="all")
-                latest_counts = df_latest['클래스'].value_counts().to_dict()
-            except:
-                latest_counts = {}
-                
-            current_latest = latest_counts.get(class_choice, 0)
+if user_name and user_phone:
+    # 1. 중복 신청 여부 확인 (이름과 연락처 모두 일치해야 함)
+    existing_user = df_current[(df_current['이름'] == user_name) & (df_current['연락처'] == user_phone)]
+    
+    if not existing_user.empty:
+        # 이미 신청한 경우
+        registered_class = existing_user.iloc[0]['클래스']
+        st.info(f"📍 **{user_name}** 님( {user_phone} )은 이미 [**{registered_class}**] 클래스에 신청하셨습니다.")
+        
+        st.warning("신청 내역을 변경하시려면 먼저 취소 버튼을 눌러주세요.")
+        if st.button(f"🗑️ '{registered_class}' 신청 취소하기"):
+            # 이름과 연락처가 모두 일치하는 행만 삭제
+            updated_df = df_current[~((df_current['이름'] == user_name) & (df_current['연락처'] == user_phone))]
+            conn.update(spreadsheet=SHEET_URL, data=updated_df)
+            st.success("신청이 정상적으로 취소되었습니다. 다시 신청해 주세요!")
+            st.rerun()
             
-            if not name or not cell_name or not phone:
-                st.warning("모든 정보를 입력해주세요.")
-            elif current_latest >= CLASS_CAPACITY[class_choice]:
-                st.error(f"앗! 그새 '{class_choice}' 클래스가 마감되었습니다.")
-            else:
-                new_row = pd.DataFrame([{
-                    "신청시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "이름": name, "셀이름": cell_name, "연락처": phone, "클래스": class_choice
-                }])
-                updated_df = pd.concat([df_current, new_row], ignore_index=True)
-                conn.update(spreadsheet=SHEET_URL, data=updated_df)
-                
-                st.session_state.submitted = True
-                st.session_state.last_class = class_choice
-                st.rerun()
+    else:
+        # 신청하지 않은 경우: 신청 폼 표시
+        if not display_options:
+            st.error("🚨 모든 클래스가 마감되었습니다.")
+        else:
+            with st.form("registration_form", clear_on_submit=True):
+                st.write(f"👉 **{user_name}** 님, 신청 정보를 입력해 주세요.")
+                cell_name = st.text_input("셀 이름")
+                class_choice = st.selectbox("원하시는 클래스를 선택하세요", display_options)
+                submit_button = st.form_submit_button("신청 완료")
 
+                if submit_button:
+                    # 실시간 잔여석 재확인
+                    try:
+                        df_latest = load_data().dropna(how="all")
+                        latest_counts = df_latest['클래스'].value_counts().to_dict()
+                    except:
+                        latest_counts = {}
+                    
+                    if not cell_name:
+                        st.warning("셀 이름을 입력해주세요.")
+                    elif latest_counts.get(class_choice, 0) >= CLASS_CAPACITY[class_choice]:
+                        st.error(f"앗! 그새 '{class_choice}' 클래스가 마감되었습니다.")
+                    else:
+                        new_row = pd.DataFrame([{
+                            "신청시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "이름": user_name, 
+                            "셀이름": cell_name, 
+                            "연락처": user_phone, 
+                            "클래스": class_choice
+                        }])
+                        updated_df = pd.concat([df_current, new_row], ignore_index=True)
+                        conn.update(spreadsheet=SHEET_URL, data=updated_df)
+                        
+                        st.success(f"🎉 신청이 완료되었습니다!")
+                        st.balloons()
+                        st.rerun()
+else:
+    st.write("위의 **이름 ** 과 **연락처 ** 를 모두 입력하면 신청 확인 및 신규 신청이 가능합니다.")
+
+# --- 관리자 메뉴 ---
 st.write("\n" * 5)
 st.divider()
 
@@ -113,7 +131,6 @@ with st.expander("🛠️ 관리자 메뉴 (비밀번호 필요)"):
     if input_pw == ADMIN_PASSWORD:
         st.success("인증되었습니다.")
         st.subheader("📝 전체 신청 명단")
-        # 관리자 메뉴에서도 최신 데이터를 즉시 불러옵니다.
         admin_df = load_data().dropna(how="all")
         st.dataframe(admin_df, use_container_width=True)
         
