@@ -23,15 +23,20 @@ st.set_page_config(page_title="교회 원데이클래스 신청", page_icon="⛪
 # --- 구글 시트 연결 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def load_data():
+# [최적화 1] 일반 조회용: 10초간 데이터를 캐싱하여 구글 API 부하를 줄임
+def load_data_fast():
+    return conn.read(spreadsheet=SHEET_URL, usecols=[0,1,2,3,4], ttl=10)
+
+# [최적화 2] 신청/취소 로직용: 캐싱 없이 즉시 최신 데이터를 가져옴
+def load_data_fresh():
     return conn.read(spreadsheet=SHEET_URL, usecols=[0,1,2,3,4], ttl=0)
 
 # --- UI 구성 ---
 st.title("⛪ 원데이클래스 선착순 신청")
 
-# 데이터 로드
+# 초기 화면용 데이터 (캐싱 적용)
 try:
-    df_current = load_data().dropna(how="all")
+    df_current = load_data_fast().dropna(how="all")
 except:
     df_current = pd.DataFrame(columns=["신청시간", "이름", "셀이름", "연락처", "클래스"])
 
@@ -65,44 +70,43 @@ with c2:
     user_cell = st.text_input("셀 이름을 입력하세요", placeholder="사랑셀")
 
 if user_name and user_cell:
-    # 1. 중복 신청 여부 확인 (이름과 셀 이름 모두 일치해야 함)
+    # 1단계: 캐시된 데이터로 중복 여부 1차 확인
     existing_user = df_current[(df_current['이름'] == user_name) & (df_current['셀이름'] == user_cell)]
     
     if not existing_user.empty:
-        # 이미 신청한 경우
         registered_class = existing_user.iloc[0]['클래스']
-        st.info(f"📍 **{user_name}** 님( **{user_cell}** )은 이미 [**{registered_class}**] 클래스에 신청하셨습니다.")
+        st.info(f"📍 **{user_name}** 님( **{user_cell}** )은 이미 [**{registered_class}**] 에 신청되어 있습니다.")
         
-        st.warning("신청 내역을 변경하시려면 먼저 취소 버튼을 눌러주세요.")
         if st.button(f"🗑️ '{registered_class}' 신청 취소하기"):
-            # 이름과 셀 이름이 모두 일치하는 행만 삭제
-            updated_df = df_current[~((df_current['이름'] == user_name) & (df_current['셀이름'] == user_cell))]
+            # 취소 시점에 최신 데이터 재로드 (다른 사람 기록 삭제 방지)
+            df_latest = load_data_fresh().dropna(how="all")
+            updated_df = df_latest[~((df_latest['이름'] == user_name) & (df_latest['셀이름'] == user_cell))]
             conn.update(spreadsheet=SHEET_URL, data=updated_df)
-            st.success("신청이 정상적으로 취소되었습니다. 다시 신청해 주세요!")
+            st.success("신청이 취소되었습니다.")
             st.rerun()
             
     else:
-        # 신청하지 않은 경우: 신청 폼 표시
         if not display_options:
             st.error("🚨 모든 클래스가 마감되었습니다.")
         else:
             with st.form("registration_form", clear_on_submit=True):
-                st.write(f"👉 **{user_name}** 님( **{user_cell}** ), 나머지 정보를 입력해 주세요.")
                 user_phone = st.text_input("연락처를 입력하세요", placeholder="010-1234-5678")
                 class_choice = st.selectbox("원하시는 클래스를 선택하세요", display_options)
                 submit_button = st.form_submit_button("신청 완료")
 
                 if submit_button:
-                    # 실시간 잔여석 재확인
-                    try:
-                        df_latest = load_data().dropna(how="all")
-                        latest_counts = df_latest['클래스'].value_counts().to_dict()
-                    except:
-                        latest_counts = {}
+                    # [최적화 3] 버튼 클릭 순간 '실시간' 데이터 로드
+                    df_realtime = load_data_fresh().dropna(how="all")
                     
+                    # 실시간 중복 체크 및 정원 체크
+                    is_duplicate = not df_realtime[(df_realtime['이름'] == user_name) & (df_realtime['셀이름'] == user_cell)].empty
+                    current_count = df_realtime[df_realtime['클래스'] == class_choice].shape[0]
+
                     if not user_phone:
                         st.warning("연락처를 입력해주세요.")
-                    elif latest_counts.get(class_choice, 0) >= CLASS_CAPACITY[class_choice]:
+                    elif is_duplicate:
+                        st.error("이미 신청 내역이 존재합니다.")
+                    elif current_count >= CLASS_CAPACITY[class_choice]:
                         st.error(f"앗! 그새 '{class_choice}' 클래스가 마감되었습니다.")
                     else:
                         new_row = pd.DataFrame([{
@@ -112,34 +116,20 @@ if user_name and user_cell:
                             "연락처": user_phone, 
                             "클래스": class_choice
                         }])
-                        updated_df = pd.concat([df_current, new_row], ignore_index=True)
+                        # [최적화 4] 방금 읽은 실시간 데이터에 합쳐서 업데이트 (데이터 유실 방지)
+                        updated_df = pd.concat([df_realtime, new_row], ignore_index=True)
                         conn.update(spreadsheet=SHEET_URL, data=updated_df)
                         
                         st.success(f"🎉 신청이 완료되었습니다!")
                         st.balloons()
                         st.rerun()
 else:
-    st.write("위의 **이름 ** 과 **셀 이름 ** 을 모두 입력하면 신청 확인 및 신규 신청이 가능합니다.")
+    st.write("위의 정보를 입력하면 신청 확인 및 신규 신청이 가능합니다.")
 
 # --- 관리자 메뉴 ---
-st.write("\n" * 5)
 st.divider()
-
-with st.expander("🛠️ 관리자 메뉴 (비밀번호 필요)"):
-    input_pw = st.text_input("관리자 비밀번호를 입력하세요", type="password")
-    
+with st.expander("🛠️ 관리자 메뉴"):
+    input_pw = st.text_input("비밀번호", type="password")
     if input_pw == ADMIN_PASSWORD:
-        st.success("인증되었습니다.")
-        st.subheader("📝 전체 신청 명단")
-        admin_df = load_data().dropna(how="all")
+        admin_df = load_data_fresh().dropna(how="all")
         st.dataframe(admin_df, use_container_width=True)
-        
-        csv = admin_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-        st.download_button(
-            label="엑셀(CSV) 파일로 다운로드",
-            data=csv,
-            file_name=f"신청현황_{datetime.now().strftime('%m%d_%H%M')}.csv",
-            mime="text/csv",
-        )
-    elif input_pw != "":
-        st.error("비밀번호가 틀렸습니다.")
